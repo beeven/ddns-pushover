@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -113,8 +116,108 @@ func GetIP(host string) (string, error) {
 	return "", ErrNotFound
 }
 
-func UpdateDNS(cfToken string, recordId string, content string) {
+type DNSRecordDetails struct {
+	Success  bool
+	Errors   []string
+	Messages []string
+	Result   struct {
+		Id         string
+		Type       string
+		Name       string
+		Content    string
+		Proxiable  bool
+		Proxied    bool
+		TTL        uint32 `json:"ttl"`
+		Locked     bool
+		ZoneId     string    `json:"zone_id"`
+		ZoneName   string    `json:"zone_name"`
+		CreatedOn  time.Time `json:"created_on"`
+		ModifiedOn time.Time `json:"modified_on"`
+		Data       map[string]interface{}
+		Meta       struct {
+			AutoAdded bool
+			Source    string
+		}
+	}
+}
 
+func UpdateDNS(cfToken string, zoneId string, recordId string, content string, client *http.Client) (string, error) {
+
+	uri := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneId, recordId)
+	req, err := http.NewRequest(http.MethodGet, uri, nil)
+	req.Header.Add("Authorization", "Bearer "+cfToken)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Println("Errored when sending request to the server:", err.Error())
+		return "", err
+	}
+
+	defer resp.Body.Close()
+	responseBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	//log.Printf("%s - %s\n", resp.Status, string(responseBody))
+	ret := DNSRecordDetails{}
+	if err = json.Unmarshal(responseBody, &ret); err != nil {
+		return "", err
+	}
+	originalIP := ret.Result.Content
+	log.Println("Original IP:", originalIP)
+
+	values := map[string]string{"content": content}
+	jsonData, err := json.Marshal(values)
+	req2, err := http.NewRequest(http.MethodPatch, uri, bytes.NewBuffer(jsonData))
+	req2.Header.Add("Authorization", "Bearer "+cfToken)
+	req2.Header.Add("Content-Type", "application/json")
+	if err != nil {
+		return "", err
+	}
+
+	resp2, err := client.Do(req2)
+	if err != nil {
+		log.Println("Errored when sending request to the server:", err.Error())
+		return "", err
+	}
+	defer resp2.Body.Close()
+	responseBody, err = ioutil.ReadAll(resp2.Body)
+	if err != nil {
+		return "", err
+	}
+	//log.Printf("%s - %s\n", resp2.Status, string(responseBody))
+	if err = json.Unmarshal(responseBody, &ret); err != nil {
+		return "", err
+	}
+	if !ret.Success {
+		return originalIP, errors.New(strings.Join(ret.Errors, "\n"))
+	}
+
+	return originalIP, nil
+}
+
+func Notify(token string, user string, device string, content string) error {
+	_, err := http.PostForm("https://api.pushover.net/1/messages.json", url.Values{
+		"token":   {token},
+		"user":    {user},
+		"title":   {"Home IP Updated"},
+		"message": {content},
+		"device":  {device},
+	})
+	if err != nil {
+		return err
+	}
+	//defer resp.Body.Close()
+	//responseBody, err := ioutil.ReadAll(resp.Body)
+	//if err != nil {
+	//	return err
+	//}
+	//log.Println(string(responseBody))
+	log.Println("Notification sent.")
+	return nil
 }
 
 var opts struct {
@@ -180,18 +283,53 @@ func main() {
 		if err != nil {
 			log.Println("Get IPv6 Error:", err.Error())
 		}
-		log.Println("IPv6:", ip6)
+		if ip := net.ParseIP(ip6); ip != nil {
+			log.Println("External IPv6:", ip6)
+			if ip.To4() != nil {
+				log.Println("Not a valid IPv6 address.")
+				ip6 = ""
+			}
+		}
 	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	originalIPs := make(map[string]bool)
 
 	if ip4 != "" {
 		for _, record := range opts.DNS4RecordIDs {
-			UpdateDNS(opts.CFZone, record, ip4)
+			oip, err := UpdateDNS(opts.CFToken, opts.CFZone, record, ip4, client)
+			if err != nil {
+				log.Println("Update DNS error:", err)
+				break
+			}
+			if oip != "" && !originalIPs[oip] {
+				originalIPs[oip] = true
+			}
 		}
 	}
 	if ip6 != "" {
 		for _, record := range opts.DNS6RecordIDs {
-			UpdateDNS(opts.CFZone, record, ip6)
+			oip, err := UpdateDNS(opts.CFToken, opts.CFZone, record, ip6, client)
+			if err != nil {
+				log.Println("Update DNS error:", err)
+				break
+			}
+			if oip != "" && !originalIPs[oip] {
+				originalIPs[oip] = true
+			}
 		}
 	}
 
+	if (ip4 != "" && !originalIPs[ip4]) || (ip6 != "" && !originalIPs[ip6]) {
+		keys := make([]string, 0, len(originalIPs))
+		for k := range originalIPs {
+			keys = append(keys, k)
+		}
+
+		msg := fmt.Sprintf("%s\n\nOriginal:\n%s", strings.Join([]string{ip4, ip6}, "\n"), strings.Join(keys, "\n"))
+		Notify(opts.PushOverToken, opts.PushOverUser, strings.Join(opts.PushOverDevices, ","), msg)
+	} else {
+		log.Println("IPs stay unchanged.")
+	}
 }
