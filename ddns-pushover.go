@@ -21,7 +21,6 @@ import (
 )
 
 var ErrNotFound = errors.New("IP address not found.")
-var DefaultUpstreamDNS = "https://1.0.0.1/dns-query"
 
 // Resolve www.cloudflare.com using upstream_dns
 func ResolveCFAddr(upstream_dns string, ipv6 bool) (string, error) {
@@ -327,8 +326,11 @@ func main() {
 			keys = append(keys, k)
 		}
 
-		msg := fmt.Sprintf("%s\n\nOriginal:\n%s", strings.Join([]string{ip4, ip6}, "\n"), strings.Join(keys, "\n"))
-		Notify(opts.PushOverToken, opts.PushOverUser, strings.Join(opts.PushOverDevices, ","), msg)
+		msg := fmt.Sprintf("%s\n\nOriginal:\n%s", strings.Trim(strings.Join([]string{ip4, ip6}, "\n"), "\n"), strings.Join(keys, "\n"))
+		log.Println(msg)
+		if opts.PushOverToken != "" && opts.PushOverUser != "" {
+			Notify(opts.PushOverToken, opts.PushOverUser, strings.Join(opts.PushOverDevices, ","), msg)
+		}
 	} else {
 		log.Println("IPs stay unchanged.")
 	}
