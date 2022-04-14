@@ -116,10 +116,19 @@ func GetIP(host string) (string, error) {
 }
 
 type DNSRecordDetails struct {
-	Success  bool
-	Errors   []string
-	Messages []string
-	Result   struct {
+	Success bool
+	Errors  []struct {
+		Code    uint32
+		Message string
+	}
+	Messages   []string
+	ResultInfo struct {
+		Page       uint32
+		PerPage    uint32 `json:"per_page"`
+		Count      uint32
+		TotalCount uint32 `json:"total_count"`
+	} `json:"result_info"`
+	Result struct {
 		Id         string
 		Type       string
 		Name       string
@@ -163,6 +172,7 @@ func UpdateDNS(cfToken string, zoneId string, recordId string, content string, c
 	//log.Printf("%s - %s\n", resp.Status, string(responseBody))
 	ret := DNSRecordDetails{}
 	if err = json.Unmarshal(responseBody, &ret); err != nil {
+		log.Println("Unable to unmarshal response:", string(responseBody))
 		return "", err
 	}
 	originalIP := ret.Result.Content
@@ -189,10 +199,15 @@ func UpdateDNS(cfToken string, zoneId string, recordId string, content string, c
 	}
 	//log.Printf("%s - %s\n", resp2.Status, string(responseBody))
 	if err = json.Unmarshal(responseBody, &ret); err != nil {
+		log.Println("Unable to unmarshal response:", string(responseBody))
 		return "", err
 	}
 	if !ret.Success {
-		return originalIP, errors.New(strings.Join(ret.Errors, "\n"))
+		errs := []string{}
+		for i, e := range ret.Errors {
+			errs = append(errs, fmt.Sprintf("%d: %s", i+1, e.Message))
+		}
+		return originalIP, errors.New(strings.Join(errs, "\n"))
 	}
 
 	return originalIP, nil
