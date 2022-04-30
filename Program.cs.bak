@@ -1,0 +1,112 @@
+﻿using System.Net;
+using System.Net.Http;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace ddns_pushover;
+
+public class Program
+{
+    static async Task Main(string[] args)
+    {
+
+        var client = new HttpClient(new SocketsHttpHandler()
+        {
+            ConnectCallback = (ctx, cancellationToken) =>
+            {
+                System.Console.WriteLine(ctx.InitialRequestMessage.RequestUri?.ToString());
+                var socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
+                socket.Connect("104.16.160.24", 443);
+                var stream = new NetworkStream(socket, true);
+                var sslStream = new SslStream(stream, false);
+                sslStream.AuthenticateAsClient(new SslClientAuthenticationOptions
+                {
+                    TargetHost = "www.cloudflare.com",
+                    ApplicationProtocols = new List<SslApplicationProtocol>(new SslApplicationProtocol[] { SslApplicationProtocol.Http11 })
+                });
+                return new ValueTask<Stream>(sslStream);
+            }
+        })
+        {
+            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrHigher,
+            DefaultRequestVersion = HttpVersion.Version11
+        };
+
+        var result = await client.GetStringAsync("http://www.cloudflare.com/cdn-cgi/trace");
+        System.Console.WriteLine(result);
+
+
+
+        var client2 = new HttpClient(new SocketsHttpHandler
+        {
+            SslOptions = new SslClientAuthenticationOptions
+            {
+                TargetHost = "www.cloudflare.com"
+            },
+            UseProxy = false,
+        });
+        var req = new HttpRequestMessage(HttpMethod.Get, "https://[2606:4700::6810:7c60]/cdn-cgi/trace");
+        req.Headers.Host = "www.cloudflare.com";
+        req.Version = HttpVersion.Version30;
+        var resp = await client2.SendAsync(req);
+        result = await resp.Content.ReadAsStringAsync();
+        System.Console.WriteLine(result);
+
+        var ips = await Dns.GetHostAddressesAsync("www.cloudflare.com");
+        foreach (var ip in ips)
+        {
+            System.Console.WriteLine(ip.ToString());
+        }
+
+
+
+
+        var dohclient = new HttpClient();
+        req = new HttpRequestMessage(HttpMethod.Get, "https://1.0.0.1/dns-query?name=www.cloudflare.com");
+        req.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/dns-json"));
+        resp = await dohclient.SendAsync(req);
+        var stream = await resp.Content.ReadAsStreamAsync();
+        var dnsresult = await JsonSerializer.DeserializeAsync<DNSQueryResult>(stream);
+        foreach(var r in dnsresult?.Answer)
+        {
+            System.Console.WriteLine(r.Data);
+        }
+        
+    }
+    public class DNSQueryResult
+    {
+        public int Status {get;set;} = 0;
+        public bool TC {get;set;}
+        public bool RD {get;set;}
+        public bool RA {get;set;}
+        public bool AD {get;set;}
+        public bool CD {get;set;}
+        public DNSQuestion[] Question {get;set;} = {};
+        public DNSAnswer[] Answer {get;set;} = {};
+
+
+        public class DNSQuestion
+        {
+            [JsonPropertyName("name")]
+            public string Name {get;set;} = "";
+            [JsonPropertyName("type")]
+            public int Type {get;set;}
+        }
+        public class DNSAnswer
+        {
+            [JsonPropertyName("name")]
+            public string Name {get;set;} = "";
+
+            [JsonPropertyName("type")]
+            public int Type {get;set;}
+            public int TTL {get;set;}
+
+            [JsonPropertyName("data")]
+            public string Data {get;set;} = "";
+        }
+    }
+
+}
