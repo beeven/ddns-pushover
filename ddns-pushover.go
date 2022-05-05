@@ -178,6 +178,7 @@ func UpdateDNS(cfToken string, zoneId string, recordId string, content string, c
 	originalIP := ret.Result.Content
 	log.Println("Original IP:", originalIP)
 
+	time.Sleep(1 * time.Second)
 	values := map[string]string{"content": content}
 	jsonData, err := json.Marshal(values)
 	req2, err := http.NewRequest(http.MethodPatch, uri, bytes.NewBuffer(jsonData))
@@ -224,12 +225,6 @@ func Notify(token string, user string, device string, content string) error {
 	if err != nil {
 		return err
 	}
-	//defer resp.Body.Close()
-	//responseBody, err := ioutil.ReadAll(resp.Body)
-	//if err != nil {
-	//	return err
-	//}
-	//log.Println(string(responseBody))
 	log.Println("Notification sent.")
 	return nil
 }
@@ -313,6 +308,7 @@ func main() {
 	if ip4 != "" {
 		for _, record := range opts.DNS4RecordIDs {
 			oip, err := UpdateDNS(opts.CFToken, opts.CFZone, record, ip4, client)
+			time.Sleep(1 * time.Second)
 			if err != nil {
 				log.Println("Update DNS error:", err)
 				break
@@ -325,6 +321,7 @@ func main() {
 	if ip6 != "" {
 		for _, record := range opts.DNS6RecordIDs {
 			oip, err := UpdateDNS(opts.CFToken, opts.CFZone, record, ip6, client)
+			time.Sleep(1 * time.Second)
 			if err != nil {
 				log.Println("Update DNS error:", err)
 				break
