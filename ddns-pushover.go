@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -17,7 +16,7 @@ import (
 	"time"
 
 	"github.com/AdguardTeam/dnsproxy/upstream"
-	"github.com/diegohordi/hardy"
+	"github.com/avast/retry-go"
 	"github.com/jessevdk/go-flags"
 	"github.com/miekg/dns"
 )
@@ -81,7 +80,7 @@ func ResolveCFAddr(upstream_dns string, ipv6 bool) (string, error) {
 	return "", ErrNotFound
 }
 
-func GetExternalIP(ctx context.Context, host string) (string, error) {
+func GetExternalIP(host string) (string, error) {
 	if host == "" {
 		host = "www.cloudflare.com"
 	}
@@ -100,45 +99,76 @@ func GetExternalIP(ctx context.Context, host string) (string, error) {
 			},
 		},
 	}
-	client := hardy.NewClient(httpClient, log.Default()).
-		WithMaxRetries(3).
-		WithWaitInterval(3 * time.Millisecond).
-		WithMultiplier(hardy.DefaultMultiplier).
-		WithMaxInterval(3 * time.Second)
 
-	readerFunc := func(retIP *string) hardy.ReaderFunc {
-		return func(response *http.Response) error {
-			if response.StatusCode == http.StatusOK {
-				defer response.Body.Close()
-				body, err := ioutil.ReadAll(response.Body)
-				if err != nil {
-					return fmt.Errorf(response.Status)
-				}
-				bodyStr := string(body)
-				lines := strings.Split(bodyStr, "\n")
-				for _, line := range lines {
-					if strings.HasPrefix(line, "ip") {
-						row := strings.Split(line, "=")
-						if len(row) > 1 {
-							*retIP = row[1]
-							return nil
-						}
+	var myIP string = ""
+
+	err = retry.Do(
+		func() error {
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+
+			defer resp.Body.Close()
+			body, err := ioutil.ReadAll(resp.Body)
+			if err != nil {
+				return fmt.Errorf(resp.Status)
+			}
+			bodyStr := string(body)
+			lines := strings.Split(bodyStr, "\n")
+			for _, line := range lines {
+				if strings.HasPrefix(line, "ip") {
+					row := strings.Split(line, "=")
+					if len(row) > 1 {
+						myIP = row[1]
+						return nil
 					}
 				}
 			}
-			return fmt.Errorf(response.Status)
-		}
-	}
-
-	fallbackFunc := func(retIP *string) hardy.FallbackFunc {
-		return func() error {
-			*retIP = ""
 			return nil
-		}
-	}
+		},
+		retry.Attempts(3),
+		retry.Delay(1*time.Second),
+	)
 
-	var myIP string = ""
-	err = client.Try(ctx, req, readerFunc(&myIP), fallbackFunc(&myIP))
+	// client := hardy.NewClient(httpClient, log.Default()).
+	// 	WithMaxRetries(3).
+	// 	WithWaitInterval(3 * time.Millisecond).
+	// 	WithMultiplier(hardy.DefaultMultiplier).
+	// 	WithMaxInterval(3 * time.Second)
+
+	// readerFunc := func(retIP *string) hardy.ReaderFunc {
+	// 	return func(response *http.Response) error {
+	// 		if response.StatusCode == http.StatusOK {
+	// 			defer response.Body.Close()
+	// 			body, err := ioutil.ReadAll(response.Body)
+	// 			if err != nil {
+	// 				return fmt.Errorf(response.Status)
+	// 			}
+	// 			bodyStr := string(body)
+	// 			lines := strings.Split(bodyStr, "\n")
+	// 			for _, line := range lines {
+	// 				if strings.HasPrefix(line, "ip") {
+	// 					row := strings.Split(line, "=")
+	// 					if len(row) > 1 {
+	// 						*retIP = row[1]
+	// 						return nil
+	// 					}
+	// 				}
+	// 			}
+	// 		}
+	// 		return fmt.Errorf(response.Status)
+	// 	}
+	// }
+
+	// fallbackFunc := func(retIP *string) hardy.FallbackFunc {
+	// 	return func() error {
+	// 		*retIP = ""
+	// 		return nil
+	// 	}
+	// }
+
+	// err = client.Try(ctx, req, readerFunc(&myIP), fallbackFunc(&myIP))
 	if err != nil {
 		return "", ErrNotFound
 	}
@@ -180,14 +210,7 @@ type DNSRecordDetails struct {
 	}
 }
 
-type APIService struct {
-	Client *hardy.Client
-}
-
-func (s *APIService) GetOrignalIP(ctx context.Context, cfToken string, zoneId string, recordId string) (string, error) {
-	if s.Client == nil {
-		return "", fmt.Errorf("no client is given")
-	}
+func GetOriginalIP(cfToken string, zoneId string, recordId string, client *http.Client) (string, error) {
 	var myIP string
 	uri := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneId, recordId)
 	req, err := http.NewRequest(http.MethodGet, uri, nil)
@@ -195,46 +218,37 @@ func (s *APIService) GetOrignalIP(ctx context.Context, cfToken string, zoneId st
 		return "", err
 	}
 	req.Header.Add("Authorization", "Bearer "+cfToken)
-	readerFunc := func(message *string) hardy.ReaderFunc {
-		return func(response *http.Response) error {
-			if response.StatusCode == http.StatusOK {
-				defer response.Body.Close()
-				responseBody, err := ioutil.ReadAll(response.Body)
-				if err != nil {
-					log.Println("Get Original IP read body error:", err)
-					return err
-				}
-				ret := DNSRecordDetails{}
-				if err = json.Unmarshal(responseBody, &ret); err != nil {
-					log.Println("Unable to unmarshal response:", string(responseBody))
-					return err
-				}
-				*message = ret.Result.Content
-				return nil
+
+	err = retry.Do(
+		func() error {
+			resp, err := client.Do(req)
+			if err != nil {
+				return err
 			}
-			return fmt.Errorf(response.Status)
-		}
-	}
-
-	fallbackFunc := func(message *string) hardy.FallbackFunc {
-		return func() error {
-			*message = "api access error"
+			defer resp.Body.Close()
+			responseBody, err := ioutil.ReadAll(resp.Body)
+			if err != nil {
+				//log.Println("Get Original IP read body error:", err)
+				return fmt.Errorf("get original IP read body error: %v", err)
+			}
+			ret := DNSRecordDetails{}
+			if err = json.Unmarshal(responseBody, &ret); err != nil {
+				//log.Println("Unable to unmarshal response:", string(responseBody))
+				return fmt.Errorf("unable to unmarshal reponse: %s \nerror: %v", string(responseBody), err)
+			}
+			myIP = ret.Result.Content
 			return nil
-		}
-	}
-
-	err = s.Client.Try(ctx, req, readerFunc(&myIP), fallbackFunc(&myIP))
+		},
+		retry.Attempts(3),
+		retry.Delay(1*time.Second),
+	)
 	if err != nil {
-		return myIP, err
+		return "", nil
 	}
 	return myIP, nil
 }
 
-func (s *APIService) UpdateRecord(ctx context.Context, cfToken string, zoneId string, recordId string, content string) error {
-	if s.Client == nil {
-		return fmt.Errorf("no client is given")
-	}
-
+func UpdateRecord(cfToken string, zoneId string, recordId string, content string, client *http.Client) error {
 	uri := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneId, recordId)
 
 	values := map[string]string{"content": content}
@@ -251,108 +265,216 @@ func (s *APIService) UpdateRecord(ctx context.Context, cfToken string, zoneId st
 		return err
 	}
 
-	readerFunc := func() hardy.ReaderFunc {
-		return func(response *http.Response) error {
-			if response.StatusCode == http.StatusOK {
-				defer response.Body.Close()
-				ret := DNSRecordDetails{}
-				responseBody, err := ioutil.ReadAll(response.Body)
-				if err != nil {
-					return fmt.Errorf("get Original IP read body error: %v", err.Error())
-				}
-
-				if err = json.Unmarshal(responseBody, &ret); err != nil {
-					log.Println("Unable to unmarshal response:", string(responseBody))
-					return nil
-				}
-				if !ret.Success {
-					errs := []string{}
-					for i, e := range ret.Errors {
-						errs = append(errs, fmt.Sprintf("%d: %s", i+1, e.Message))
-					}
-					log.Println(strings.Join(errs, "\n"))
-					return nil
-				}
+	err = retry.Do(
+		func() error {
+			resp, err := client.Do(req)
+			if err != nil {
+				return err
 			}
-			return fmt.Errorf(response.Status)
-		}
-	}
+			defer resp.Body.Close()
+			ret := DNSRecordDetails{}
+			responseBody, err := ioutil.ReadAll(resp.Body)
+			if err != nil {
+				return fmt.Errorf("get Original IP read body error: %v", err.Error())
+			}
 
-	err = s.Client.Try(ctx, req, readerFunc(), nil)
+			if err = json.Unmarshal(responseBody, &ret); err != nil {
+				log.Println("Unable to unmarshal response:", string(responseBody))
+				return nil
+			}
+			if !ret.Success {
+				errs := []string{}
+				for i, e := range ret.Errors {
+					errs = append(errs, fmt.Sprintf("%d: %s", i+1, e.Message))
+				}
+				log.Println(strings.Join(errs, "\n"))
+				return nil
+			}
+			return nil
+		},
+		retry.Attempts(3),
+	)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func UpdateDNS(cfToken string, zoneId string, recordId string, content string, client *http.Client) (string, error) {
+// type APIService struct {
+// 	Client *hardy.Client
+// }
 
-	uri := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneId, recordId)
-	req, err := http.NewRequest(http.MethodGet, uri, nil)
-	req.Header.Add("Authorization", "Bearer "+cfToken)
-	if err != nil {
-		return "", err
-	}
+// func (s *APIService) GetOrignalIP(ctx context.Context, cfToken string, zoneId string, recordId string) (string, error) {
+// 	if s.Client == nil {
+// 		return "", fmt.Errorf("no client is given")
+// 	}
+// 	var myIP string
+// 	uri := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneId, recordId)
+// 	req, err := http.NewRequest(http.MethodGet, uri, nil)
+// 	if err != nil {
+// 		return "", err
+// 	}
+// 	req.Header.Add("Authorization", "Bearer "+cfToken)
 
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Println("Errored when sending request to the server:", err.Error())
-		return "", err
-	}
+// 	readerFunc := func(message *string) hardy.ReaderFunc {
+// 		return func(response *http.Response) error {
+// 			if response.StatusCode == http.StatusOK {
+// 				defer response.Body.Close()
+// 				responseBody, err := ioutil.ReadAll(response.Body)
+// 				if err != nil {
+// 					//log.Println("Get Original IP read body error:", err)
+// 					return fmt.Errorf("get original IP read body error: %v", err)
+// 				}
+// 				ret := DNSRecordDetails{}
+// 				if err = json.Unmarshal(responseBody, &ret); err != nil {
+// 					//log.Println("Unable to unmarshal response:", string(responseBody))
+// 					return fmt.Errorf("unable to unmarshal reponse: %s \nerror: %v", string(responseBody), err)
+// 				}
+// 				*message = ret.Result.Content
+// 				return nil
+// 			}
+// 			return fmt.Errorf(response.Status)
+// 		}
+// 	}
 
-	defer resp.Body.Close()
-	responseBody, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	//log.Printf("%s - %s\n", resp.Status, string(responseBody))
-	ret := DNSRecordDetails{}
-	if err = json.Unmarshal(responseBody, &ret); err != nil {
-		log.Println("Unable to unmarshal response:", string(responseBody))
-		return "", err
-	}
-	originalIP := ret.Result.Content
-	log.Println("Original IP:", originalIP)
+// 	fallbackFunc := func(message *string) hardy.FallbackFunc {
+// 		return func() error {
+// 			*message = "api access error"
+// 			return nil
+// 		}
+// 	}
 
-	time.Sleep(1 * time.Second)
-	values := map[string]string{"content": content}
-	jsonData, err := json.Marshal(values)
-	if err != nil {
-		return "", err
-	}
+// 	err = s.Client.Try(ctx, req, readerFunc(&myIP), fallbackFunc(&myIP))
+// 	if err != nil {
+// 		return myIP, err
+// 	}
+// 	return myIP, nil
+// }
 
-	req2, err := http.NewRequest(http.MethodPatch, uri, bytes.NewBuffer(jsonData))
-	req2.Header.Add("Authorization", "Bearer "+cfToken)
-	req2.Header.Add("Content-Type", "application/json")
-	if err != nil {
-		return "", err
-	}
+// func (s *APIService) UpdateRecord(ctx context.Context, cfToken string, zoneId string, recordId string, content string) error {
+// 	if s.Client == nil {
+// 		return fmt.Errorf("no client is given")
+// 	}
 
-	resp2, err := client.Do(req2)
-	if err != nil {
-		log.Println("Errored when sending request to the server:", err.Error())
-		return "", err
-	}
-	defer resp2.Body.Close()
-	responseBody, err = ioutil.ReadAll(resp2.Body)
-	if err != nil {
-		return "", err
-	}
-	//log.Printf("%s - %s\n", resp2.Status, string(responseBody))
-	if err = json.Unmarshal(responseBody, &ret); err != nil {
-		log.Println("Unable to unmarshal response:", string(responseBody))
-		return "", err
-	}
-	if !ret.Success {
-		errs := []string{}
-		for i, e := range ret.Errors {
-			errs = append(errs, fmt.Sprintf("%d: %s", i+1, e.Message))
-		}
-		return originalIP, errors.New(strings.Join(errs, "\n"))
-	}
+// 	uri := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneId, recordId)
 
-	return originalIP, nil
-}
+// 	values := map[string]string{"content": content}
+// 	jsonData, err := json.Marshal(values)
+// 	if err != nil {
+// 		return err
+// 	}
+
+// 	req, err := http.NewRequest(http.MethodPatch, uri, bytes.NewBuffer(jsonData))
+// 	req.Header.Add("Authorization", "Bearer "+cfToken)
+// 	req.Header.Add("Content-Type", "application/json")
+// 	if err != nil {
+// 		log.Println("new request error:", err)
+// 		return err
+// 	}
+
+// 	readerFunc := func() hardy.ReaderFunc {
+// 		return func(response *http.Response) error {
+// 			if response.StatusCode == http.StatusOK {
+// 				defer response.Body.Close()
+// 				ret := DNSRecordDetails{}
+// 				responseBody, err := ioutil.ReadAll(response.Body)
+// 				if err != nil {
+// 					return fmt.Errorf("get Original IP read body error: %v", err.Error())
+// 				}
+
+// 				if err = json.Unmarshal(responseBody, &ret); err != nil {
+// 					log.Println("Unable to unmarshal response:", string(responseBody))
+// 					return nil
+// 				}
+// 				if !ret.Success {
+// 					errs := []string{}
+// 					for i, e := range ret.Errors {
+// 						errs = append(errs, fmt.Sprintf("%d: %s", i+1, e.Message))
+// 					}
+// 					log.Println(strings.Join(errs, "\n"))
+// 					return nil
+// 				}
+// 				return nil
+// 			}
+// 			return fmt.Errorf(response.Status)
+// 		}
+// 	}
+
+// 	err = s.Client.Try(ctx, req, readerFunc(), nil)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	return nil
+// }
+
+// func UpdateDNS(cfToken string, zoneId string, recordId string, content string, client *http.Client) (string, error) {
+
+// 	uri := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneId, recordId)
+// 	req, err := http.NewRequest(http.MethodGet, uri, nil)
+// 	req.Header.Add("Authorization", "Bearer "+cfToken)
+// 	if err != nil {
+// 		return "", err
+// 	}
+
+// 	resp, err := client.Do(req)
+// 	if err != nil {
+// 		log.Println("Errored when sending request to the server:", err.Error())
+// 		return "", err
+// 	}
+
+// 	defer resp.Body.Close()
+// 	responseBody, err := ioutil.ReadAll(resp.Body)
+// 	if err != nil {
+// 		return "", err
+// 	}
+// 	//log.Printf("%s - %s\n", resp.Status, string(responseBody))
+// 	ret := DNSRecordDetails{}
+// 	if err = json.Unmarshal(responseBody, &ret); err != nil {
+// 		log.Println("Unable to unmarshal response:", string(responseBody))
+// 		return "", err
+// 	}
+// 	originalIP := ret.Result.Content
+// 	log.Println("Original IP:", originalIP)
+
+// 	time.Sleep(1 * time.Second)
+// 	values := map[string]string{"content": content}
+// 	jsonData, err := json.Marshal(values)
+// 	if err != nil {
+// 		return "", err
+// 	}
+
+// 	req2, err := http.NewRequest(http.MethodPatch, uri, bytes.NewBuffer(jsonData))
+// 	req2.Header.Add("Authorization", "Bearer "+cfToken)
+// 	req2.Header.Add("Content-Type", "application/json")
+// 	if err != nil {
+// 		return "", err
+// 	}
+
+// 	resp2, err := client.Do(req2)
+// 	if err != nil {
+// 		log.Println("Errored when sending request to the server:", err.Error())
+// 		return "", err
+// 	}
+// 	defer resp2.Body.Close()
+// 	responseBody, err = ioutil.ReadAll(resp2.Body)
+// 	if err != nil {
+// 		return "", err
+// 	}
+// 	//log.Printf("%s - %s\n", resp2.Status, string(responseBody))
+// 	if err = json.Unmarshal(responseBody, &ret); err != nil {
+// 		log.Println("Unable to unmarshal response:", string(responseBody))
+// 		return "", err
+// 	}
+// 	if !ret.Success {
+// 		errs := []string{}
+// 		for i, e := range ret.Errors {
+// 			errs = append(errs, fmt.Sprintf("%d: %s", i+1, e.Message))
+// 		}
+// 		return originalIP, errors.New(strings.Join(errs, "\n"))
+// 	}
+
+// 	return originalIP, nil
+// }
 
 func Notify(token string, user string, device string, content string) error {
 	_, err := http.PostForm("https://api.pushover.net/1/messages.json", url.Values{
@@ -393,7 +515,7 @@ func main() {
 	ip4, ip6 := "", ""
 	if len(opts.DNS4RecordIDs) > 0 {
 		if opts.Host != "" {
-			ip4, err = GetExternalIP(context.Background(), opts.Host)
+			ip4, err = GetExternalIP(opts.Host)
 		} else {
 			log.Println("Resolving www.cloudflare.com in ipv4...")
 			host, err := ResolveCFAddr(opts.DNS, false)
@@ -401,7 +523,7 @@ func main() {
 				log.Println("Resolve Cloudflare ipv4 host error:", err.Error())
 			} else {
 				log.Println("Resolved Cloudflare host:", host)
-				ip4, err = GetExternalIP(context.Background(), host)
+				ip4, err = GetExternalIP(host)
 				if err != nil {
 					log.Println("Get external IPv4 error:", err)
 				}
@@ -421,7 +543,7 @@ func main() {
 
 	if len(opts.DNS6RecordIDs) > 0 {
 		if opts.Host != "" {
-			ip6, err = GetExternalIP(context.Background(), opts.Host)
+			ip6, err = GetExternalIP(opts.Host)
 		} else {
 			log.Default().Println("Resolving www.cloudflare.com in ipv6...")
 			host, err := ResolveCFAddr(opts.DNS, true)
@@ -429,7 +551,7 @@ func main() {
 				log.Println("Resolve Cloudflare ipv6 host error:", err.Error())
 			} else {
 				log.Println("Resolved Cloudflare host:", host)
-				ip6, err = GetExternalIP(context.Background(), host)
+				ip6, err = GetExternalIP(host)
 				if err != nil {
 					log.Println("Get external IPv6 error:", err)
 				}
@@ -448,24 +570,26 @@ func main() {
 	}
 
 	httpClient := &http.Client{Timeout: 10 * time.Second}
-	client := hardy.NewClient(httpClient, log.Default()).
-		WithMaxRetries(3).
-		WithWaitInterval(3 * time.Millisecond).
-		WithMultiplier(hardy.DefaultMultiplier).
-		WithMaxInterval(3 * time.Second)
-	apiService := &APIService{Client: client}
+	// client := hardy.NewClient(httpClient, log.Default()).
+	// 	WithMaxRetries(3).
+	// 	WithWaitInterval(1 * time.Second).
+	// 	WithMultiplier(hardy.DefaultMultiplier).
+	// 	WithMaxInterval(3 * time.Second)
+	// apiService := &APIService{Client: client}
 
 	originalIPs := make(map[string]bool)
 
 	if ip4 != "" {
 		for _, record := range opts.DNS4RecordIDs {
 			//oip, err := UpdateDNS(opts.CFToken, opts.CFZone, record, ip4, client)
-			oip, err := apiService.GetOrignalIP(context.Background(), opts.CFToken, opts.CFZone, record)
+			//oip, err := apiService.GetOrignalIP(context.Background(), opts.CFToken, opts.CFZone, record)
+			oip, err := GetOriginalIP(opts.CFToken, opts.CFZone, record, httpClient)
 			if err != nil {
 				log.Println("Get original IP error:", err)
 			}
 			if oip != ip4 {
-				err = apiService.UpdateRecord(context.Background(), opts.CFToken, opts.CFZone, record, ip4)
+				//err = apiService.UpdateRecord(context.Background(), opts.CFToken, opts.CFZone, record, ip4)
+				err = UpdateRecord(opts.CFToken, opts.CFZone, record, ip4, httpClient)
 				if err != nil {
 					log.Println("Update DNS error:", err)
 					continue
@@ -479,12 +603,14 @@ func main() {
 	}
 	if ip6 != "" {
 		for _, record := range opts.DNS6RecordIDs {
-			oip, err := apiService.GetOrignalIP(context.Background(), opts.CFToken, opts.CFZone, record)
+			//oip, err := apiService.GetOrignalIP(context.Background(), opts.CFToken, opts.CFZone, record)
+			oip, err := GetOriginalIP(opts.CFToken, opts.CFZone, record, httpClient)
 			if err != nil {
 				log.Println("Get original IP error:", err)
 			}
 			if oip != ip4 {
-				err = apiService.UpdateRecord(context.Background(), opts.CFToken, opts.CFZone, record, ip6)
+				//err = apiService.UpdateRecord(context.Background(), opts.CFToken, opts.CFZone, record, ip6)
+				err = UpdateRecord(opts.CFToken, opts.CFZone, record, ip6, httpClient)
 				if err != nil {
 					log.Println("Update DNS error:", err)
 					continue
@@ -503,7 +629,7 @@ func main() {
 		}
 
 		msg := fmt.Sprintf("%s\n\nOriginal:\n%s", strings.Trim(strings.Join([]string{ip4, ip6}, "\n"), "\n"), strings.Join(keys, "\n"))
-		log.Println("msg:", msg)
+		log.Println("msg:\n", msg)
 		if opts.PushOverToken != "" && opts.PushOverUser != "" {
 			Notify(opts.PushOverToken, opts.PushOverUser, strings.Join(opts.PushOverDevices, ","), msg)
 		}

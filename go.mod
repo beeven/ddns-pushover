@@ -9,6 +9,7 @@ require (
 	github.com/aead/poly1305 v0.0.0-20180717145839-3fee0db0b635 // indirect
 	github.com/ameshkov/dnscrypt/v2 v2.2.3 // indirect
 	github.com/ameshkov/dnsstamps v1.0.3 // indirect
+	github.com/avast/retry-go v3.0.0+incompatible // indirect
 	github.com/cheekybits/genny v1.0.0 // indirect
 	github.com/diegohordi/hardy v0.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.5.1 // indirect
