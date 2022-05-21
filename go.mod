@@ -10,6 +10,7 @@ require (
 	github.com/ameshkov/dnscrypt/v2 v2.2.3 // indirect
 	github.com/ameshkov/dnsstamps v1.0.3 // indirect
 	github.com/cheekybits/genny v1.0.0 // indirect
+	github.com/diegohordi/hardy v0.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.5.1 // indirect
 	github.com/go-task/slim-sprig v0.0.0-20210107165309-348f09dbbbc0 // indirect
 	github.com/jessevdk/go-flags v1.5.0 // indirect
