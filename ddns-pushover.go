@@ -220,22 +220,23 @@ func GetOriginalIP(cfToken string, zoneId string, recordId string, client *http.
 func UpdateRecord(cfToken string, zoneId string, recordId string, content string, client *http.Client) error {
 	uri := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneId, recordId)
 
-	values := map[string]string{"content": content}
-	jsonData, err := json.Marshal(values)
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequest(http.MethodPatch, uri, bytes.NewBuffer(jsonData))
-	req.Header.Add("Authorization", "Bearer "+cfToken)
-	req.Header.Add("Content-Type", "application/json")
-	if err != nil {
-		log.Println("new request error:", err)
-		return err
-	}
-
-	err = retry.Do(
+	err := retry.Do(
 		func() error {
+
+			// values := map[string]string{"content": content}
+			// jsonData, err := json.Marshal(values)
+			// if err != nil {
+			// 	return err
+			// }
+
+			req, err := http.NewRequest(http.MethodPatch, uri, bytes.NewBuffer([]byte(`{"content":"`+content+`"}`)))
+			req.Header.Add("Authorization", "Bearer "+cfToken)
+			req.Header.Add("Content-Type", "application/json")
+			if err != nil {
+				log.Println("new request error:", err)
+				return err
+			}
+
 			resp, err := client.Do(req)
 			if err != nil {
 				return err
@@ -244,7 +245,7 @@ func UpdateRecord(cfToken string, zoneId string, recordId string, content string
 			ret := DNSRecordDetails{}
 			responseBody, err := ioutil.ReadAll(resp.Body)
 			if err != nil {
-				return fmt.Errorf("get Original IP read body error: %v", err.Error())
+				return fmt.Errorf("update record read body error: %v", err.Error())
 			}
 
 			if err = json.Unmarshal(responseBody, &ret); err != nil {
