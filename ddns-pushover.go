@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -16,20 +16,20 @@ import (
 	"time"
 
 	"github.com/AdguardTeam/dnsproxy/upstream"
-	"github.com/avast/retry-go"
+	"github.com/avast/retry-go/v4"
 	"github.com/jessevdk/go-flags"
 	"github.com/miekg/dns"
 )
 
 var ErrNotFound = errors.New("IP address not found")
 
-// Resolve www.cloudflare.com using upstream_dns
-func ResolveCFAddr(upstream_dns string, ipv6 bool) (string, error) {
+// Resolve host using upstream_dns
+func ResolveAddr(host string, upstream_dns string, ipv6 bool) (string, error) {
 
 	if upstream_dns == "" {
-		ips, err := net.LookupIP("www.cloudflare.com")
+		ips, err := net.LookupIP(host)
 		if err != nil {
-			log.Fatal("Cannot lookup www.cloudflare.com:", err.Error())
+			log.Fatalf("Cannot lookup %s: %s", host, err.Error())
 		}
 		for _, ip := range ips {
 			ip4 := ip.To4()
@@ -59,7 +59,7 @@ func ResolveCFAddr(upstream_dns string, ipv6 bool) (string, error) {
 		qType = dns.TypeA
 	}
 	req.Question = []dns.Question{
-		{Name: "www.cloudflare.com.", Qtype: qType, Qclass: dns.ClassINET},
+		{Name: host, Qtype: qType, Qclass: dns.ClassINET},
 	}
 
 	reply, err := u.Exchange(&req)
@@ -111,7 +111,7 @@ func GetExternalIP(host string) (string, error) {
 			}
 
 			defer resp.Body.Close()
-			body, err := ioutil.ReadAll(resp.Body)
+			body, err := io.ReadAll(resp.Body)
 			if err != nil {
 				return fmt.Errorf(resp.Status)
 			}
@@ -193,7 +193,7 @@ func GetOriginalIP(cfToken string, zoneId string, recordId string, client *http.
 				return err
 			}
 			defer resp.Body.Close()
-			responseBody, err := ioutil.ReadAll(resp.Body)
+			responseBody, err := io.ReadAll(resp.Body)
 			if err != nil {
 				return fmt.Errorf("get original IP read body error: %v", err)
 			}
@@ -243,7 +243,7 @@ func UpdateRecord(cfToken string, zoneId string, recordId string, content string
 			}
 			defer resp.Body.Close()
 			ret := DNSRecordDetails{}
-			responseBody, err := ioutil.ReadAll(resp.Body)
+			responseBody, err := io.ReadAll(resp.Body)
 			if err != nil {
 				return fmt.Errorf("update record read body error: %v", err.Error())
 			}
@@ -320,7 +320,7 @@ func main() {
 			ip4, err = GetExternalIP(opts.Host)
 		} else {
 			log.Println("Resolving www.cloudflare.com in ipv4...")
-			host, err := ResolveCFAddr(opts.DNS, false)
+			host, err := ResolveAddr("www.cloudflare.com", opts.DNS, false)
 			if err != nil {
 				log.Println("Resolve Cloudflare ipv4 host error:", err.Error())
 			} else {
@@ -348,7 +348,7 @@ func main() {
 			ip6, err = GetExternalIP(opts.Host)
 		} else {
 			log.Default().Println("Resolving www.cloudflare.com in ipv6...")
-			host, err := ResolveCFAddr(opts.DNS, true)
+			host, err := ResolveAddr("www.cloudflare.cm", opts.DNS, true)
 			if err != nil {
 				log.Println("Resolve Cloudflare ipv6 host error:", err.Error())
 			} else {
