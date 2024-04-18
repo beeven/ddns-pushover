@@ -64,6 +64,8 @@ func ResolveAddr(host string, upstream_dns string, ipv6 bool) (string, error) {
 
 	reply, err := u.Exchange(&req)
 	if err != nil {
+		log.Println("Error on exchange")
+		log.Printf("host %s", host)
 		return "", err
 	}
 
@@ -330,7 +332,7 @@ func main() {
 			ip4, err = GetExternalIP(opts.Host)
 		} else {
 			log.Println("Resolving www.cloudflare.com in ipv4...")
-			host, err := ResolveAddr("www.cloudflare.com", opts.DNS, false)
+			host, err := ResolveAddr("www.cloudflare.com.", opts.DNS, false)
 			if err != nil {
 				log.Println("Resolve Cloudflare ipv4 host error:", err.Error())
 			} else {
@@ -367,7 +369,7 @@ func main() {
 			ip6, err = GetExternalIP(opts.Host)
 		} else {
 			log.Default().Println("Resolving www.cloudflare.com in ipv6...")
-			host, err := ResolveAddr("www.cloudflare.cm", opts.DNS, true)
+			host, err := ResolveAddr("www.cloudflare.com.", opts.DNS, true)
 			if err != nil {
 				log.Println("Resolve Cloudflare ipv6 host error:", err.Error())
 			} else {
