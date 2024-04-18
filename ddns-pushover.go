@@ -276,11 +276,12 @@ func UpdateRecord(cfToken string, zoneId string, recordId string, content string
 }
 
 // Send notification with Pushover
-func Notify(token string, user string, device string, content string) error {
+func Notify(token string, user string, device string, content string, title string) error {
+
 	_, err := http.PostForm("https://api.pushover.net/1/messages.json", url.Values{
 		"token":   {token},
 		"user":    {user},
-		"title":   {"Home IP Updated"},
+		"title":   {title},
 		"message": {content},
 		"device":  {device},
 	})
@@ -298,9 +299,10 @@ var opts struct {
 	CFZone          string   `short:"z" long:"zone" description:"Cloudflare zone identifier." required:"true"`
 	DNS4RecordIDs   []string `short:"4" long:"ipv4" description:"DNS A record id to update. At least ONE A or AAAA record must be specified."`
 	DNS6RecordIDs   []string `short:"6" long:"ipv6" description:"DNS AAAA record id to update. At least ONE A or AAAA record must be specified."`
-	PushOverToken   string   `short:"p" long:"pushover-token" description:"Pushover Token."`
-	PushOverUser    string   `short:"u" long:"pushover-user" description:"Pushover User."`
+	PushOverToken   string   `short:"p" long:"pushover-token" description:"Pushover token."`
+	PushOverUser    string   `short:"u" long:"pushover-user" description:"Pushover user."`
 	PushOverDevices []string `short:"d" long:"device" description:"Pushover devices."`
+	PushOverTitle	string   `short:"m" long:"title" description:"Pushover message title."`
 }
 
 func main() {
@@ -443,7 +445,13 @@ func main() {
 		msg := fmt.Sprintf("%s\n\nOriginal:\n%s", strings.Trim(strings.Join([]string{ip4, ip6}, "\n"), "\n"), strings.Join(keys, "\n"))
 		log.Printf("Notification: %s\n", strings.ReplaceAll(msg, "\n", " "))
 		if opts.PushOverToken != "" && opts.PushOverUser != "" {
-			err = Notify(opts.PushOverToken, opts.PushOverUser, strings.Join(opts.PushOverDevices, ","), msg)
+			var title string
+			if opts.PushOverTitle == "" {
+				title = "Home IP Updated"
+			} else {
+				title = opts.PushOverTitle
+			}
+			err = Notify(opts.PushOverToken, opts.PushOverUser, strings.Join(opts.PushOverDevices, ","), msg, title)
 			if err != nil {
 				log.Println("Send notification error:", err)
 			} else {
