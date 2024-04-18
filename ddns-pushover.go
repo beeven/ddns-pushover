@@ -291,6 +291,7 @@ func Notify(token string, user string, device string, content string) error {
 var opts struct {
 	DNS             string   `short:"n" long:"dns"  description:"DNS to use to resolve www.cloudflare.com. For example: https://1.0.0.1/dns-query, tls://8.8.8.8 . If empty, use the system default." `
 	Host            string   `short:"o" long:"host" description:"Force using host address as cloudflare's host (www.cloudflare.com). If empty, host is resolved with dns."`
+	Addrs           []string `short:"a" long:"address" description:"Force update dns record to this address, instead of querying public address from cloudflare. If multiple addresses is provided, use the first valid ipv4 and ipv6 address."`
 	CFToken         string   `short:"t" long:"token" description:"Cloudflare API token." required:"true"`
 	CFZone          string   `short:"z" long:"zone" description:"Cloudflare zone identifier." required:"true"`
 	DNS4RecordIDs   []string `short:"4" long:"ipv4" description:"DNS A record id to update. At least ONE A or AAAA record must be specified."`
@@ -316,7 +317,16 @@ func main() {
 
 	ip4, ip6 := "", ""
 	if len(opts.DNS4RecordIDs) > 0 {
-		if opts.Host != "" {
+		if len(opts.Addrs) > 0 {
+			for _, addr := range opts.Addrs {
+				if ip := net.ParseIP(addr); ip != nil {
+					if ipv4 := ip.To4(); ipv4 != nil {
+						ip4 = ipv4.String()
+						break
+					}
+				}
+			}
+		} else if opts.Host != "" {
 			ip4, err = GetExternalIP(opts.Host)
 		} else {
 			log.Println("Resolving www.cloudflare.com in ipv4...")
@@ -344,7 +354,16 @@ func main() {
 	}
 
 	if len(opts.DNS6RecordIDs) > 0 {
-		if opts.Host != "" {
+		if len(opts.Addrs) > 0 {
+			for _, addr := range opts.Addrs {
+				if ip := net.ParseIP(addr); ip != nil {
+					if ipv4 := ip.To4(); ipv4 == nil {
+						ip6 = ip.To16().String()
+						break
+					}
+				}
+			}
+		} else if opts.Host != "" {
 			ip6, err = GetExternalIP(opts.Host)
 		} else {
 			log.Default().Println("Resolving www.cloudflare.com in ipv6...")
